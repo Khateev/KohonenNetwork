@@ -166,4 +166,57 @@ namespace KohonenNetwork
         }
 
     }
+
+    public interface IDistanceMeasure
+    {
+        double Distance(double[] vector1, double[] vector2);
+    }
+
+    public class EuclideanDistance : IDistanceMeasure
+    {
+        public double Distance(double[] vector1, double[] vector2)
+        {
+            double distance = 0.0;
+            for (var i = 0; i < vector1.Length; i++)
+            {
+                distance += Math.Pow(vector1[i] - vector2[i], 2);
+            }
+            return Math.Sqrt(distance);
+        }
+    }
+
+    public class ManhattanDistance : IDistanceMeasure
+    {
+        public double Distance(double[] vector1, double[] vector2)
+        {
+            double distance = 0.0;
+            for (var i = 0; i < vector1.Length; i++)
+            {
+                distance += Math.Abs(vector1[i] - vector2[i]);
+            }
+            return distance;
+        }
+    }
+
+    public class PowerDistance : IDistanceMeasure
+    {
+        private double _r;
+        private double _p;
+
+        public PowerDistance(double r, double p)
+        {
+            _r = r;
+            _p = p;
+        }
+
+        public double Distance(double[] vector1, double[] vector2)
+        {
+            double distance = 0.0;
+            for (var i = 0; i < vector1.Length; i++)
+            {
+                distance += Math.Pow(vector1[i] - vector2[i], _p);
+            }
+            return Math.Pow(distance, 1 / _r);
+        }
+    }
 }
