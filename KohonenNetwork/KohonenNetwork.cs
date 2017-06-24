@@ -8,18 +8,28 @@ namespace KohonenNetwork
 {
     public class KohonenNetwork
     {
-        public Neuron[] Clusters;
+        public Neuron[] Clusters { get; private set; }
 
         private double _trainVelocity = 0.3;
         private double _potentialMin = 0.4; //0.75
-        private int _lengthDataVector;
-        private Normalize.Normalize _normalize;
 
-        public KohonenNetwork(int amountClusters, List<double[]> data)
+        private IDistanceMeasure _distanceMeasure;
+
+        public KohonenNetwork(int amountClusters, List<double[]> data, IDistanceMeasure distanceMeasure = null)
         {
-            _normalize = new Normalize.Normalize(data);
+            if (distanceMeasure == null)
+            {
+                _distanceMeasure = new EuclideanDistance();
+            }
+            else
+            {
+                _distanceMeasure = distanceMeasure;
+            }
+
             Clusters = new Neuron[amountClusters];
             InitClustersWeights(data[0].Length, _potentialMin);
+
+
         }
 
         private void InitClustersWeights(int dim_input_vector, double potential)
@@ -32,26 +42,24 @@ namespace KohonenNetwork
                 {
                     weights[j] = random.NextDouble();
                 }
-                Clusters[i] = new Neuron(weights, potential);
+                Clusters[i] = new Neuron(weights, potential, _distanceMeasure, i);
             }
         }
 
         public void Train(List<double[]> input)
         {
-            var normalizationData = input.Select(x => _normalize.Normalization(x)).ToArray();
 
             var edge = 0;
             for (var v = _trainVelocity; v > 0; v = v - 0.01)
             {
                 for (var i = 0; i < input.Count(); i++)
                 {
-                    var numberTrain = edge * (normalizationData[i].Length - 1) + i + 1;
+                    var numberTrain = edge * (input[i].Length - 1) + i + 1;
 
-                    var winner = GetWinnerInRace(normalizationData[i]);
-                    ChangePotentialAllNeurons(winner);
+                    var winner = GetWinnerInRace(input[i]);
 
-                    winner.CorrectWinner(normalizationData[i], v);
-                    CorrectNeighborsOfWinner(winner, normalizationData[i], v, edge);
+                    winner.CorrectWinner(input[i], v);
+                    CorrectPotentialAndNeighbors(winner, input[i], v, edge);
 
                 }
 
@@ -59,46 +67,76 @@ namespace KohonenNetwork
             }
         }
 
-        public int[] ToLabel(List<double[]> input)
+        public int ToLabel(double[] input)
         {
-            return input.Select(x => GetIndexNearestToVector(Clusters, _normalize.Normalization(x))).ToArray();
+            return GetWinnerInRace(input, false).ClusterId;
         }
 
-        private Neuron[] GetNeuronsWithCorrectPotential()
+        public List<int> ToLabel(List<double[]> input, int start = 0, int end = 0)
         {
-            return Clusters.Where(x => x.GetPotential() >= _potentialMin).ToArray();
-        }
+            var result = new List<int>();
+            end = end == 0 ? input.Count : end;
 
-        private Neuron GetWinnerInRace(double[] vector)
-        {
-            var neuronsInRace = GetNeuronsWithCorrectPotential();
-
-            var winnerIndex = GetIndexNearestToVector(neuronsInRace, vector);
-            return neuronsInRace[winnerIndex];
-        }
-
-        private int GetIndexNearestToVector(Neuron[] neurons, double[] vector)
-        {
-            var distances = neurons.Select(x => x.GetDistanceToVector(vector)).ToArray();
-            return Array.IndexOf(distances, distances.Min());
-        }
-
-        private void ChangePotentialAllNeurons(Neuron winner)
-        {
-            foreach (var neuron in Clusters)
+            for (var i = start; i < end; i++)
             {
-                neuron.ChangePotential(neuron == winner, _potentialMin, 1.0 / Clusters.Length);
+                result.Add(GetWinnerInRace(input[i], false).ClusterId);
+            }
+
+            return result;
+        }
+
+
+        public List<int> ToLabelParallel(List<double[]> input, int countThread = 8)
+        {
+            int countOnTask = input.Count / countThread;
+            Task<List<int>>[] tasks = new Task<List<int>>[countThread];
+
+            for (var i = 0; i < countThread; i++)
+            {
+                var start = countThread * i;
+                var end = i == (countThread - 1) ? input.Count : countThread * (i + 1);
+                tasks[i] = new Task<List<int>>(() => ToLabel(input, start, end));
+                tasks[i].Start();
+            }
+
+            Task.WaitAll(tasks);
+
+            return tasks.SelectMany(x => x.Result).ToList();
+        }
+
+        private Neuron GetWinnerInRace(double[] vector, bool usePotential = true)
+        {
+            Neuron winner = Clusters[0];
+            double minDistance = Clusters[0].GetDistanceToVector(vector);
+            foreach (var cluster in Clusters)
+            {
+                if (cluster.Potential < _potentialMin && usePotential) continue;
+
+                var distance = cluster.GetDistanceToVector(vector);
+
+                if (distance < minDistance)
+                {
+                    minDistance = distance;
+                    winner = cluster;
+                }
+            }
+
+            return winner;
+        }
+
+        public void CorrectPotentialAndNeighbors(Neuron winner, double[] vector, double velocity, int edge)
+        {
+            foreach (var cluster in Clusters)
+            {
+                if (cluster != winner)
+                {
+                    cluster.CorrectNeighbor(winner.Weights, vector, velocity, edge);
+                }
+
+                cluster.ChangePotential(cluster == winner, _potentialMin, 1.0 / Clusters.Length);
             }
         }
 
-        private void CorrectNeighborsOfWinner(Neuron winner, double[] vector, double velocity, int edge)
-        {
-            var neighbors = Clusters.Where(x => x != winner).ToArray();
-            foreach (var neighbor in neighbors)
-            {
-                neighbor.CorrectNeighbor(winner.GetWeights(), vector, velocity, edge);
-            }
-        }
     }
 
 
@@ -106,52 +144,42 @@ namespace KohonenNetwork
 
     public class Neuron
     {
-        public double[] _weights { get; }
-        private double _potential;
-        private int _amountWinner = 0;
+        public double[] Weights { get; private set; }
+        public double Potential { get; private set; }
+        public int CountWinner { get; set; }
+        private IDistanceMeasure _distance;
+        public int ClusterId { get; private set; }
 
-        public Neuron(double[] weights, double potential)
+        public Neuron(double[] weights, double potential, IDistanceMeasure distance, int clusterid)
         {
-            _weights = weights;
-            _potential = potential;
+            Weights = weights;
+            Potential = potential;
+            CountWinner = 0;
+            _distance = distance;
+            ClusterId = clusterid;
         }
 
         public double GetDistanceToVector(double[] vector)
         {
-            double distance = 0.0;
-            for (var i = 0; i < _weights.Length; i++)
-            {
-                distance += Math.Pow(vector[i] - _weights[i], 2);
-            }
-            return Math.Sqrt(distance);
-        }
-
-        public double GetPotential()
-        {
-            return _potential;
-        }
-
-        public double[] GetWeights()
-        {
-            return _weights;
+            return _distance.Distance(Weights, vector);
         }
 
         public void ChangePotential(bool isWinner, double potentialMin, double diffPotential)
         {
             if (isWinner)
             {
-                _amountWinner++;
-                _potential -= potentialMin;
+                CountWinner++;
+                Potential -= potentialMin;
                 return;
             }
-            _potential += diffPotential;       /////////change  ddd
+            Potential += diffPotential;       /////////change  ddd
         }
 
         public void CorrectWinner(double[] vector, double velocityTrain)
         {
-            for (var i = 0; i < _weights.Length; i++)
+            for (var i = 0; i < Weights.Length; i++)
             {
-                _weights[i] += velocityTrain * (vector[i] - _weights[i]);
+                Weights[i] += velocityTrain * (vector[i] - Weights[i]);
             }
         }
 
@@ -159,9 +187,9 @@ namespace KohonenNetwork
         {
             var sigma = Math.Pow(0.1 * Math.Exp(-1 * edge / 1000), 2);
             var functionOfNeighbors = Math.Exp(-1 * GetDistanceToVector(winnerWeights) / (2 * sigma));
-            for (var i = 0; i < _weights.Length; i++)
+            for (var i = 0; i < Weights.Length; i++)
             {
-                _weights[i] += velocityTrain * functionOfNeighbors * (vector[i] - _weights[i]);
+                Weights[i] += velocityTrain * functionOfNeighbors * (vector[i] - Weights[i]);
             }
         }
 
