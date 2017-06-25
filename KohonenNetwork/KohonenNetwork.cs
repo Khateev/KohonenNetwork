@@ -15,7 +15,10 @@ namespace KohonenNetwork
 
         private IDistanceMeasure _distanceMeasure;
 
-        public KohonenNetwork(int amountClusters, List<double[]> data, IDistanceMeasure distanceMeasure = null)
+        public int Dimensions { get; private set; }
+        public int AmountClusters { get; private set; }
+
+        public KohonenNetwork(int amountClusters, int dimensions, IDistanceMeasure distanceMeasure = null, List<double[]> weights = null)
         {
             if (distanceMeasure == null)
             {
@@ -27,9 +30,30 @@ namespace KohonenNetwork
             }
 
             Clusters = new Neuron[amountClusters];
-            InitClustersWeights(data[0].Length, _potentialMin);
+            if (weights == null)
+            {
+                InitClustersWeights(dimensions, _potentialMin);
+            }
+            else
+            {
+                InitClustersWeights(weights, dimensions, _potentialMin);
+            }
+            Dimensions = dimensions;
+            AmountClusters = amountClusters;
 
+        }
 
+        private void InitClustersWeights(List<double[]> weights, int dim_input_vector, double potential)
+        {
+            if (weights.Count != dim_input_vector)
+            {
+                //exception
+            }
+
+            for (var i = 0; i < Clusters.Length; i++)
+            {
+                Clusters[i] = new Neuron(weights[i], potential, _distanceMeasure, i);
+            }
         }
 
         private void InitClustersWeights(int dim_input_vector, double potential)
@@ -67,41 +91,69 @@ namespace KohonenNetwork
             }
         }
 
+
+
         public int ToLabel(double[] input)
         {
             return GetWinnerInRace(input, false).ClusterId;
         }
 
-        public List<int> ToLabel(List<double[]> input, int start = 0, int end = 0)
+        public List<int> ToLabel(List<double[]> input, int start = 0, int end = 0, int thread = 0)
         {
             var result = new List<int>();
             end = end == 0 ? input.Count : end;
 
             for (var i = start; i < end; i++)
             {
-                result.Add(GetWinnerInRace(input[i], false).ClusterId);
+                var id = GetWinnerInRace(input[i], false).ClusterId;
+                if (id != 8 && id != 1)
+                {
+                    var t = 5;
+                }
+                result.Add(id);
+
             }
 
             return result;
         }
 
+        public void ToLabel(List<double[]> input, List<int> result, int start = 0, int end = 0)
+        {
 
-        public List<int> ToLabelParallel(List<double[]> input, int countThread = 8)
+            end = end == 0 ? input.Count : end;
+
+            for (var i = start; i < end; i++)
+            {
+                result.Add(GetWinnerInRace(input[i], false).ClusterId);
+
+            }
+
+
+        }
+
+        public List<List<int>> ToLabelParallel(List<double[]> input, int countThread = 8)
         {
             int countOnTask = input.Count / countThread;
-            Task<List<int>>[] tasks = new Task<List<int>>[countThread];
+            Task[] tasks = new Task[countThread];
+            var result = new List<List<int>>();
+
+            var currentWeights = Clusters.Select(x => x.Weights).ToList();
 
             for (var i = 0; i < countThread; i++)
             {
-                var start = countThread * i;
-                var end = i == (countThread - 1) ? input.Count : countThread * (i + 1);
-                tasks[i] = new Task<List<int>>(() => ToLabel(input, start, end));
+                var start = countOnTask * i;
+                var end = i == (countThread - 1) ? input.Count : countOnTask * (i + 1);
+
+
+                var copyNet = new KohonenNetwork(AmountClusters, Dimensions, _distanceMeasure.Copy(), Clusters.Select(x => x.Weights.Select(y => y).ToArray()).ToList());
+
+                tasks[i] = new Task(() => result.Add(copyNet.ToLabel(input, start, end, i)));
                 tasks[i].Start();
             }
 
             Task.WaitAll(tasks);
 
-            return tasks.SelectMany(x => x.Result).ToList();
+            return result;
         }
 
         private Neuron GetWinnerInRace(double[] vector, bool usePotential = true)
@@ -198,6 +250,7 @@ namespace KohonenNetwork
     public interface IDistanceMeasure
     {
         double Distance(double[] vector1, double[] vector2);
+        IDistanceMeasure Copy();
     }
 
     public class EuclideanDistance : IDistanceMeasure
@@ -211,6 +264,11 @@ namespace KohonenNetwork
             }
             return Math.Sqrt(distance);
         }
+
+        public IDistanceMeasure Copy()
+        {
+            return new EuclideanDistance();
+        }
     }
 
     public class ManhattanDistance : IDistanceMeasure
@@ -223,6 +281,11 @@ namespace KohonenNetwork
                 distance += Math.Abs(vector1[i] - vector2[i]);
             }
             return distance;
+        }
+
+        public IDistanceMeasure Copy()
+        {
+            return new ManhattanDistance();
         }
     }
 
@@ -245,6 +308,11 @@ namespace KohonenNetwork
                 distance += Math.Pow(vector1[i] - vector2[i], _p);
             }
             return Math.Pow(distance, 1 / _r);
+        }
+
+        public IDistanceMeasure Copy()
+        {
+            return new PowerDistance(_r, _p);
         }
     }
 }
